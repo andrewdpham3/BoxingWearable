@@ -2,7 +2,9 @@
 Prototype boxing glove sensor that helps coach boxing. Modified from the SensorTile default project DataLog.
 
 Devices:
+
 SensorTile
+
 Nucleo Board
 
 Instructions:
