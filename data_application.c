@@ -32,7 +32,7 @@
 #include "string.h"
 #include "SensorTile.h"
 #include <math.h>
-
+#include <stdio.h>;
 /* FatFs includes component */
 #include "ff_gen_drv.h"
 #include "sd_diskio.h"
@@ -219,7 +219,7 @@ void Accelero_Sensor_Handler( void *handle , int *state, int *acc, double *maxve
     {
       if(*acc>3550 && *state==0){
         *state=1;
-        sprintf( dataOut, "\nTimeStamp: %02d:%02d:%02d.%02d", stimestructure.Hours, stimestructure.Minutes, stimestructure.Seconds, subSec );
+        //sprintf( dataOut, "\nTimeStamp: %02d:%02d:%02d.%02d", stimestructure.Hours, stimestructure.Minutes, stimestructure.Seconds, subSec );
         *initialminutes=stimestructure.Minutes;
         *initialseconds=stimestructure.Seconds;
         *initialsubsec=subSec;
@@ -231,12 +231,15 @@ void Accelero_Sensor_Handler( void *handle , int *state, int *acc, double *maxve
       }
       else if(*acc<3550 && *state==1){
         *state=0;
-        sprintf( dataOut, "initialseconds: %d, initialsubsec: %d, stimestructure.Seconds: %d, subsec: %d", *initialseconds, *initialsubsec, stimestructure.Seconds, subSec);
+        //sprintf( dataOut, "initialseconds: %d, initialsubsec: %d, stimestructure.Seconds: %d, subsec: %d", *initialseconds, *initialsubsec, stimestructure.Seconds, subSec);
         CDC_Fill_Buffer(( uint8_t * )dataOut, strlen( dataOut ));
-        float quick=abs(subSec-*initialsubsec);
-        //sprintf( dataOut, "Quickness: %lf", quick);
+        int quick=abs(subSec-*initialsubsec);
+        sprintf( dataOut, "Quickness: %i", quick);
         CDC_Fill_Buffer(( uint8_t * )dataOut, strlen( dataOut ));
-        sprintf(dataOut," Punch with force of %d m/ds", *maxvel/10/2);
+        if(quick<=15)
+        	sprintf(dataOut," Jab with force of %d m/ds detected", *maxvel/10/2);
+        if(quick>15)
+            sprintf(dataOut," Cross with force of %d m/ds detected", *maxvel/10/2);
         CDC_Fill_Buffer(( uint8_t * )dataOut, strlen( dataOut ));
         *maxvel=0;
         sprintf(dataOut,"");
