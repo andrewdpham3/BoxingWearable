@@ -96,7 +96,6 @@ static void RTC_Config( void );
 static void RTC_TimeStampConfig( void );
 static void initializeAllSensors( void );
 
-
 /* Private functions ---------------------------------------------------------*/
  
 /**
@@ -104,14 +103,14 @@ static void initializeAllSensors( void );
   * @param  None
   * @retval None
   */
-int main( void )
-{
+int main( void ){
   uint32_t msTick, msTickPrev = 0;
   uint8_t doubleTap = 0;
   int acc=0;
   int state=0;
   double maxvel=0;
   int initialminutes,initialseconds,initialsubsec;
+  int ishook=1;
   
   /* STM32L4xx HAL library initialization:
   - Configure the Flash prefetch, instruction and Data caches
@@ -130,7 +129,7 @@ int main( void )
     BSP_LED_Init(LED1);
     BSP_LED_On(LED1);
   }
-#ifdef NOT_DEBUGGING     
+#ifdef NOT_DEBUGGING
   else
   {
     /* Initialize LEDSWD: Cannot be used during debug because it overrides SWDCLK pin configuration */
@@ -191,9 +190,9 @@ int main( void )
       }
 #endif      
       RTC_Handler( &RtcHandle );
-      
+
       Accelero_Sensor_Handler( LSM6DSM_X_0_handle, &state, &acc, &maxvel,
-          &RtcHandle, &initialminutes, &initialseconds, &initialsubsec );
+          &RtcHandle, &initialminutes, &initialseconds, &initialsubsec, &ishook, LSM6DSM_G_0_handle );
       
       Gyro_Sensor_Handler( LSM6DSM_G_0_handle );
       
