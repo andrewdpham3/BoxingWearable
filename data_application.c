@@ -32,7 +32,7 @@
 #include "string.h"
 #include "SensorTile.h"
 #include <math.h>
-#include <stdio.h>;
+#include <stdio.h>
 /* FatFs includes component */
 #include "ff_gen_drv.h"
 #include "sd_diskio.h"
@@ -167,7 +167,8 @@ void RTC_Handler( RTC_HandleTypeDef *RtcHandle )
 * @retval None
 */
 void Accelero_Sensor_Handler( void *handle , int *state, int *acc, double *maxvel,
-    RTC_HandleTypeDef *RtcHandle, int *initialminutes, int *initialseconds, int *initialsubsec)
+    RTC_HandleTypeDef *RtcHandle, int *initialminutes, int *initialseconds, int *initialsubsec,
+	int *ishook, void *ghandle)
 {
   
   uint8_t who_am_i;
@@ -175,8 +176,10 @@ void Accelero_Sensor_Handler( void *handle , int *state, int *acc, double *maxve
   float fullScale;
   uint8_t id;
   SensorAxes_t acceleration;
+  SensorAxes_t angular_velocity;
   uint8_t status;
   int32_t d1, d2;
+  float thresh=100000.0f;
   
   BSP_ACCELERO_Get_Instance( handle, &id );
   
@@ -209,11 +212,23 @@ void Accelero_Sensor_Handler( void *handle , int *state, int *acc, double *maxve
     uint8_t subSec = 0;
     RTC_DateTypeDef sdatestructureget;
     RTC_TimeTypeDef stimestructure;
-
     HAL_RTC_GetTime( RtcHandle, &stimestructure, FORMAT_BIN );
     HAL_RTC_GetDate( RtcHandle, &sdatestructureget, FORMAT_BIN );
     subSec = (((((( int )RTC_SYNCH_PREDIV) - (( int )stimestructure.SubSeconds)) * 100) / ( RTC_SYNCH_PREDIV + 1 )) & 0xff );
 
+    //type
+    if ( BSP_GYRO_Get_Axes( ghandle, &angular_velocity ) == COMPONENT_ERROR ){
+          angular_velocity.AXIS_X = 0;
+          angular_velocity.AXIS_Y = 0;
+          angular_velocity.AXIS_Z = 0;
+    }
+
+    //sprintf(dataOut," Y Ang Vel: %d", angular_velocity.AXIS_Y);
+    //CDC_Fill_Buffer(( uint8_t * )dataOut, strlen( dataOut ));
+
+    if(angular_velocity.AXIS_Y>thresh && *state==1){
+        *ishook=0;
+    }
 
     if(SendOverUSB) /* Write data on the USB */
     {
@@ -223,28 +238,33 @@ void Accelero_Sensor_Handler( void *handle , int *state, int *acc, double *maxve
         *initialminutes=stimestructure.Minutes;
         *initialseconds=stimestructure.Seconds;
         *initialsubsec=subSec;
+        /*
         CDC_Fill_Buffer(( uint8_t * )dataOut, strlen( dataOut ));
         sprintf(dataOut," Punch Started! ");
         CDC_Fill_Buffer(( uint8_t * )dataOut, strlen( dataOut ));
         sprintf(dataOut,"");
-        CDC_Fill_Buffer(( uint8_t * )dataOut, strlen( dataOut ));
+        CDC_Fill_Buffer(( uint8_t * )dataOut, strlen( dataOut ));*/
       }
       else if(*acc<3550 && *state==1){
         *state=0;
         //sprintf( dataOut, "initialseconds: %d, initialsubsec: %d, stimestructure.Seconds: %d, subsec: %d", *initialseconds, *initialsubsec, stimestructure.Seconds, subSec);
-        CDC_Fill_Buffer(( uint8_t * )dataOut, strlen( dataOut ));
+        //CDC_Fill_Buffer(( uint8_t * )dataOut, strlen( dataOut ));
         int quick=abs(subSec-*initialsubsec);
-        sprintf( dataOut, "Quickness: %i", quick);
-        CDC_Fill_Buffer(( uint8_t * )dataOut, strlen( dataOut ));
+        //sprintf( dataOut, "Quickness: %i", quick);
+        //CDC_Fill_Buffer(( uint8_t * )dataOut, strlen( dataOut ));
         if(quick<=15)
-        	sprintf(dataOut," Jab with force of %d m/ds detected", *maxvel/10/2);
-        if(quick>15)
-            sprintf(dataOut," Cross with force of %d m/ds detected", *maxvel/10/2);
+        	sprintf(dataOut," Jab with force of %d m/ds detected\n", *maxvel/20);
+        if(quick>15 && *ishook==0)
+            sprintf(dataOut,"Cros with force of %d m/ds detected\n", *maxvel/20);
+        if(quick>15 && *ishook==1)
+            sprintf(dataOut,"Hook with force of %d m/ds detected\n", *maxvel/20);
         CDC_Fill_Buffer(( uint8_t * )dataOut, strlen( dataOut ));
-        *maxvel=0;
         sprintf(dataOut,"");
         CDC_Fill_Buffer(( uint8_t * )dataOut, strlen( dataOut ));
+        *ishook=1;
+        *maxvel=0;
       }
+
 
       if ( verbose == 1 )
       {
@@ -302,7 +322,6 @@ void Accelero_Sensor_Handler( void *handle , int *state, int *acc, double *maxve
 */
 void Gyro_Sensor_Handler( void *handle )
 {
-  
   uint8_t who_am_i;
   float odr;
   float fullScale;
@@ -310,6 +329,7 @@ void Gyro_Sensor_Handler( void *handle )
   SensorAxes_t angular_velocity;
   uint8_t status;
   int32_t d1, d2;
+  float thresh=200000.0f;
   
   BSP_GYRO_Get_Instance( handle, &id );
   
@@ -327,7 +347,23 @@ void Gyro_Sensor_Handler( void *handle )
     if(SendOverUSB) /* Write data on the USB */
     {
       //sprintf( dataOut, "\n\rGYR_X: %d, GYR_Y: %d, GYR_Z: %d", (int)angular_velocity.AXIS_X, (int)angular_velocity.AXIS_Y, (int)angular_velocity.AXIS_Z );
-      CDC_Fill_Buffer(( uint8_t * )dataOut, strlen( dataOut ));
+/*
+    	if(angular_velocity.AXIS_X>thresh){
+    		sprintf(dataOut,"X Rotation!");
+    		CDC_Fill_Buffer(( uint8_t * )dataOut, strlen( dataOut ));
+    	}
+    	if(angular_velocity.AXIS_Y>thresh){
+    	    sprintf(dataOut,"Y Rotation!");
+    	    CDC_Fill_Buffer(( uint8_t * )dataOut, strlen( dataOut ));
+    	}
+    	if(angular_velocity.AXIS_Z>thresh){
+    	    sprintf(dataOut,"Z Rotation!");
+    	    CDC_Fill_Buffer(( uint8_t * )dataOut, strlen( dataOut ));
+    	}
+
+*/
+    	sprintf(dataOut,"");
+    	CDC_Fill_Buffer(( uint8_t * )dataOut, strlen( dataOut ));
       
       if ( verbose == 1 )
       {
