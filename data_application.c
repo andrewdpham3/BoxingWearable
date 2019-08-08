@@ -1,780 +1,524 @@
+
+
 /**
-  ******************************************************************************
-  * @file    DataLog/Src/datalog_application.c
-  * @author  Central Labs
-  * @version V1.1.0
-  * @date    27-Sept-2016
-  * @brief   This file provides a set of functions to handle the datalog
-  *          application.
-  ******************************************************************************
-  * @attention
-  *
-  * <h2><center>&copy; COPYRIGHT(c) 2014 STMicroelectronics</center></h2>
-  *
-  * Licensed under MCD-ST Liberty SW License Agreement V2, (the "License");
-  * You may not use this file except in compliance with the License.
-  * You may obtain a copy of the License at:
-  *
-  *        http://www.st.com/software_license_agreement_liberty_v2
-  *
-  * Unless required by applicable law or agreed to in writing, software
-  * distributed under the License is distributed on an "AS IS" BASIS,
-  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-  * See the License for the specific language governing permissions and
-  * limitations under the License.
-  *
-  ******************************************************************************
-  */
+* @brief  This function is executed in case of error occurrence
+* @param  None
+* @retval None
+*//**
+******************************************************************************
+* @file    DataLog/Src/main.c
+* @author  Central Labs
+* @version V1.1.1
+* @date    06-Dec-2016
+* @brief   Main program body
+******************************************************************************
+* @attention
+*
+* <h2><center>&copy; COPYRIGHT(c) 2016 STMicroelectronics</center></h2>
+*
+* Redistribution and use in source and binary forms, with or without modification,
+* are permitted provided that the following conditions are met:
+*   1. Redistributions of source code must retain the above copyright notice,
+*      this list of conditions and the following disclaimer.
+*   2. Redistributions in binary form must reproduce the above copyright notice,
+*      this list of conditions and the following disclaimer in the documentation
+*      and/or other materials provided with the distribution.
+*   3. Neither the name of STMicroelectronics nor the names of its contributors
+*      may be used to endorse or promote products derived from this software
+*      without specific prior written permission.
+*
+* THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+* AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+* IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+* DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+* FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+* DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+* SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+* CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+* OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+* OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+*
+******************************************************************************
+*/
 
 /* Includes ------------------------------------------------------------------*/
-#include "datalog_application.h"
+
+#include <string.h> /* strlen */
+#include <stdio.h>  /* sprintf */
+#include <math.h>   /* trunc */
 #include "main.h"
-#include "string.h"
-#include "SensorTile.h"
-#include <math.h>
-#include <stdio.h>
+
+#include "datalog_application.h"
+#include "usbd_cdc_interface.h"
+
 /* FatFs includes component */
 #include "ff_gen_drv.h"
 #include "sd_diskio.h"
 
-FRESULT res;                                          /* FatFs function common result code */
-uint32_t byteswritten, bytesread;                     /* File write/read counts */
-FATFS SDFatFs;  /* File system object for SD card logical drive */
-FIL MyFile;     /* File object */
-char SDPath[4]; /* SD card logical drive path */
-    
-volatile uint8_t SD_Log_Enabled = 0;
-static uint8_t verbose = 0;  /* Verbose output to UART terminal ON/OFF. */
+/* Private typedef -----------------------------------------------------------*/
 
-static char dataOut[256];
-char newLine[] = "\r\n";
+/* Private define ------------------------------------------------------------*/
 
+/* Data acquisition period [ms] */
+#define DATA_PERIOD_MS (100)
+//#define NOT_DEBUGGING
+
+/* Private macro -------------------------------------------------------------*/
+/* Private variables ---------------------------------------------------------*/
+
+/* SendOverUSB = 0  --> Save sensors data on SDCard (enable with double click) */
+/* SendOverUSB = 1  --> Send sensors data via USB */
+uint8_t SendOverUSB = 1;
+
+USBD_HandleTypeDef  USBD_Device;
+static volatile uint8_t MEMSInterrupt = 0;
+static volatile uint8_t acquire_data_enable_request  = 1;
+static volatile uint8_t acquire_data_disable_request = 0;
+static volatile uint8_t no_H_HTS221 = 0;
+static volatile uint8_t no_T_HTS221 = 0;
+static volatile uint8_t no_GG = 0;
+
+static RTC_HandleTypeDef RtcHandle;
+static void *LSM6DSM_X_0_handle = NULL;
+static void *LSM6DSM_G_0_handle = NULL;
+static void *LSM303AGR_X_0_handle = NULL;
+static void *LSM303AGR_M_0_handle = NULL;
+static void *LPS22HB_P_0_handle = NULL;
+static void *LPS22HB_T_0_handle = NULL; 
+static void *HTS221_H_0_handle = NULL; 
+static void *HTS221_T_0_handle = NULL;
+static void *GG_handle = NULL;
+
+/* Private function prototypes -----------------------------------------------*/
+
+static void Error_Handler( void );
+static void RTC_Config( void );
+static void RTC_TimeStampConfig( void );
+static void initializeAllSensors( void );
+
+/* Private functions ---------------------------------------------------------*/
+ 
 /**
-  * @brief  Start SD-Card demo
+  * @brief  Main program
   * @param  None
   * @retval None
   */
-void DATALOG_SD_Init(void)
-{
-  char SDPath[4];
-    
-  if(FATFS_LinkDriver(&SD_Driver, SDPath) == 0)
+int main( void ){
+  uint32_t msTick, msTickPrev = 0;
+  uint8_t doubleTap = 0;
+  int acc=0;
+  int state=0;
+  double maxvel=0;
+  int initialminutes,initialseconds,initialsubsec;
+  int ishook=1;
+  
+  /* STM32L4xx HAL library initialization:
+  - Configure the Flash prefetch, instruction and Data caches
+  - Configure the Systick to generate an interrupt each 1 msec
+  - Set NVIC Group Priority to 4
+  - Global MSP (MCU Support Package) initialization
+  */
+  HAL_Init();
+  
+  /* Configure the system clock */
+  SystemClock_Config();
+  
+  if(SendOverUSB)
   {
-    /* Register the file system object to the FatFs module */
-    if(f_mount(&SDFatFs, (TCHAR const*)SDPath, 0) != FR_OK)
+    /* Initialize LED */
+    BSP_LED_Init(LED1);
+    BSP_LED_On(LED1);
+  }
+#ifdef NOT_DEBUGGING
+  else
+  {
+    /* Initialize LEDSWD: Cannot be used during debug because it overrides SWDCLK pin configuration */
+    BSP_LED_Init(LEDSWD);
+    BSP_LED_Off(LEDSWD);
+  }
+#endif
+  
+  /* Initialize RTC */
+  RTC_Config();
+  RTC_TimeStampConfig();
+  
+  /* enable USB power on Pwrctrl CR2 register */
+  HAL_PWREx_EnableVddUSB();
+  
+  if(SendOverUSB) /* Configure the USB */
+  {
+    /*** USB CDC Configuration ***/
+    /* Init Device Library */
+    USBD_Init(&USBD_Device, &VCP_Desc, 0);
+    /* Add Supported Class */
+    USBD_RegisterClass(&USBD_Device, USBD_CDC_CLASS);
+    /* Add Interface callbacks for AUDIO and CDC Class */
+    USBD_CDC_RegisterInterface(&USBD_Device, &USBD_CDC_fops);
+    /* Start Device Process */
+    USBD_Start(&USBD_Device);
+  }
+  else /* Configure the SDCard */
+  {
+    DATALOG_SD_Init();
+  }
+  HAL_Delay(200);
+  
+  /* Configure and disable all the Chip Select pins */
+  Sensor_IO_SPI_CS_Init_All();
+  
+  /* Initialize and Enable the available sensors */
+  initializeAllSensors();
+  enableAllSensors();
+  
+  BSP_ACCELERO_Set_FS_Value(LSM6DSM_X_0_handle, 4.0f);
+  
+  while (1)
+  {
+    /* Get sysTick value and check if it's time to execute the task */
+    msTick = HAL_GetTick();
+    if(msTick % DATA_PERIOD_MS == 0 && msTickPrev != msTick)
     {
-      /* FatFs Initialization Error */
-      while(1)
+      msTickPrev = msTick;
+      if(SendOverUSB)
       {
         BSP_LED_On(LED1);
-        HAL_Delay(500);
+      }
+#ifdef NOT_DEBUGGING     
+      else if (SD_Log_Enabled) 
+      {
+        BSP_LED_On(LEDSWD);
+      }
+#endif      
+      RTC_Handler( &RtcHandle );
+
+      Accelero_Sensor_Handler( LSM6DSM_X_0_handle, &state, &acc, &maxvel,
+          &RtcHandle, &initialminutes, &initialseconds, &initialsubsec, &ishook, LSM6DSM_G_0_handle );
+      
+      Gyro_Sensor_Handler( LSM6DSM_G_0_handle );
+      
+      Magneto_Sensor_Handler( LSM303AGR_M_0_handle );
+      
+      Pressure_Sensor_Handler( LPS22HB_P_0_handle );
+      
+      if(!no_T_HTS221)
+      {
+        Temperature_Sensor_Handler( HTS221_T_0_handle );
+      }
+      if(!no_H_HTS221)
+      {
+        Humidity_Sensor_Handler( HTS221_H_0_handle );
+      }
+      
+      if(!no_GG)
+      {
+        Gas_Gauge_Handler(GG_handle);
+      }
+
+      if(SD_Log_Enabled) /* Write data to the file on the SDCard */
+      {
+        DATALOG_SD_NewLine();
+      }
+      
+      if(SendOverUSB)
+      {
         BSP_LED_Off(LED1);
-        HAL_Delay(100);
+      }
+#ifdef NOT_DEBUGGING     
+      else if (SD_Log_Enabled) 
+      {
+        BSP_LED_Off(LEDSWD);
+      }
+#endif
+    }
+      
+    /* Check LSM6DSM Double Tap Event  */
+    if(MEMSInterrupt)
+    {
+      MEMSInterrupt = 0;
+      BSP_ACCELERO_Get_Double_Tap_Detection_Status_Ext(LSM6DSM_X_0_handle,&doubleTap);
+      if(doubleTap) { /* Double Tap event */
+        if (SD_Log_Enabled) 
+        {
+          DATALOG_SD_Log_Disable();
+          SD_Log_Enabled=0;
+        }
+        else
+        {
+          while(SD_Log_Enabled != 1)
+          {
+            if(DATALOG_SD_Log_Enable())
+            {
+              SD_Log_Enabled=1;
+            }
+            else
+            {
+              DATALOG_SD_Log_Disable();
+            }
+            HAL_Delay(100);
+          }
+        }
       }
     }
+    
+    /* Go to Sleep */
+    __WFI();
   }
 }
-  
-/**
-  * @brief  Start SD-Card demo
-  * @param  None
-  * @retval None
-  */
-uint8_t DATALOG_SD_Log_Enable(void)
-{
-  static uint16_t sdcard_file_counter = 0;
-  char header[] = "Timestamp\tAccX [mg]\tAccY [mg]\tAccZ [mg]\tGyroX [mdps]\tGyroY [mdps]\tGyroZ [mdps]\tMagX [mgauss]\tMagY [mgauss]\tMagZ [mgauss]\tP [mB]\tT [°C]\tH [%]\tVOL [mV]\tBAT [%]\r\n";
-  uint32_t byteswritten; /* written byte count */
-  char file_name[30] = {0};
-  
-  /* SD SPI CS Config */
-  SD_IO_CS_Init();
-  
-  sprintf(file_name, "%s%.3d%s", "SensorTile_Log_N", sdcard_file_counter, ".tsv");
-  sdcard_file_counter++;
 
-  HAL_Delay(100);
 
-  if(f_open(&MyFile, (char const*)file_name, FA_CREATE_ALWAYS | FA_WRITE) != FR_OK)
-  {
-    return 0;
-  }
-  
-  if(f_write(&MyFile, (const void*)&header, sizeof(header)-1, (void *)&byteswritten) != FR_OK)
-  {
-    return 0;
-  }
-  return 1;
-}
 
 /**
-  * @brief  Disable SDCard Log
-  * @param  None
-  * @retval None
-  */
-void DATALOG_SD_Log_Disable(void)
-{
-  f_close(&MyFile);
-  
-  /* SD SPI Config */
-  SD_IO_CS_DeInit();
-}
-
-/**
-  * @brief  Write New Line to file
-  * @param  None
-  * @retval None
-  */
-void DATALOG_SD_NewLine(void)
-{
-  uint32_t byteswritten; /* written byte count */
-  f_write(&MyFile, (const void*)&newLine, 2, (void *)&byteswritten);
-}
-
-/**
-* @brief  Handles the time+date getting/sending
+* @brief  Initialize all sensors
 * @param  None
 * @retval None
 */
-void RTC_Handler( RTC_HandleTypeDef *RtcHandle )
+static void initializeAllSensors( void )
 {
-  uint8_t subSec = 0;
-  RTC_DateTypeDef sdatestructureget;
+  if (BSP_ACCELERO_Init( LSM6DSM_X_0, &LSM6DSM_X_0_handle ) != COMPONENT_OK)
+  {
+    while(1);
+  }
+  
+  if (BSP_GYRO_Init( LSM6DSM_G_0, &LSM6DSM_G_0_handle ) != COMPONENT_OK)
+  {
+    while(1);
+  }
+  
+  if (BSP_ACCELERO_Init( LSM303AGR_X_0, &LSM303AGR_X_0_handle ) != COMPONENT_OK)
+  {
+    while(1);
+  }
+  
+  if (BSP_MAGNETO_Init( LSM303AGR_M_0, &LSM303AGR_M_0_handle ) != COMPONENT_OK)
+  {
+    while(1);
+  }
+  
+  if (BSP_PRESSURE_Init( LPS22HB_P_0, &LPS22HB_P_0_handle ) != COMPONENT_OK)
+  {
+    while(1);
+  }
+  
+  if (BSP_TEMPERATURE_Init( LPS22HB_T_0, &LPS22HB_T_0_handle ) != COMPONENT_OK)
+  {
+    while(1);
+  }
+  
+  if(BSP_TEMPERATURE_Init( HTS221_T_0, &HTS221_T_0_handle ) == COMPONENT_ERROR)
+  {
+    no_T_HTS221 = 1;
+  }
+  
+  if(BSP_HUMIDITY_Init( HTS221_H_0, &HTS221_H_0_handle ) == COMPONENT_ERROR)
+  {
+    no_H_HTS221 = 1;
+  }
+  
+  /* Inialize the Gas Gauge if the battery is present */
+  if(BSP_GG_Init(&GG_handle) == COMPONENT_ERROR)
+  {
+    no_GG=1;
+  }
+  
+  if(!SendOverUSB)
+  {
+    /* Enable HW Double Tap detection */
+    BSP_ACCELERO_Enable_Double_Tap_Detection_Ext(LSM6DSM_X_0_handle);
+    BSP_ACCELERO_Set_Tap_Threshold_Ext(LSM6DSM_X_0_handle, LSM6DSM_TAP_THRESHOLD_MID);
+  }
+  
+  
+}
+
+/**
+* @brief  Enable all sensors
+* @param  None
+* @retval None
+*/
+void enableAllSensors( void )
+{
+  BSP_ACCELERO_Sensor_Enable( LSM6DSM_X_0_handle );
+  BSP_GYRO_Sensor_Enable( LSM6DSM_G_0_handle );
+  BSP_ACCELERO_Sensor_Enable( LSM303AGR_X_0_handle );
+  BSP_MAGNETO_Sensor_Enable( LSM303AGR_M_0_handle );
+  BSP_PRESSURE_Sensor_Enable( LPS22HB_P_0_handle );
+  BSP_TEMPERATURE_Sensor_Enable( LPS22HB_T_0_handle );
+  if(!no_T_HTS221)
+  {
+    BSP_TEMPERATURE_Sensor_Enable( HTS221_T_0_handle );
+    BSP_HUMIDITY_Sensor_Enable( HTS221_H_0_handle );
+  }
+  
+}
+
+
+
+/**
+* @brief  Disable all sensors
+* @param  None
+* @retval None
+*/
+void disableAllSensors( void )
+{
+  BSP_ACCELERO_Sensor_Disable( LSM6DSM_X_0_handle );
+  BSP_ACCELERO_Sensor_Disable( LSM303AGR_X_0_handle );
+  BSP_GYRO_Sensor_Disable( LSM6DSM_G_0_handle );
+  BSP_MAGNETO_Sensor_Disable( LSM303AGR_M_0_handle );
+  BSP_HUMIDITY_Sensor_Disable( HTS221_H_0_handle );
+  BSP_TEMPERATURE_Sensor_Disable( HTS221_T_0_handle );
+  BSP_TEMPERATURE_Sensor_Disable( LPS22HB_T_0_handle );
+  BSP_PRESSURE_Sensor_Disable( LPS22HB_P_0_handle );
+}
+
+
+
+/**
+* @brief  Configures the RTC
+* @param  None
+* @retval None
+*/
+static void RTC_Config( void )
+{
+  /*##-1- Configure the RTC peripheral #######################################*/
+  RtcHandle.Instance = RTC;
+  
+  /* Configure RTC prescaler and RTC data registers */
+  /* RTC configured as follow:
+  - Hour Format    = Format 12
+  - Asynch Prediv  = Value according to source clock
+  - Synch Prediv   = Value according to source clock
+  - OutPut         = Output Disable
+  - OutPutPolarity = High Polarity
+  - OutPutType     = Open Drain */
+  RtcHandle.Init.HourFormat     = RTC_HOURFORMAT_12;
+  RtcHandle.Init.AsynchPrediv   = RTC_ASYNCH_PREDIV;
+  RtcHandle.Init.SynchPrediv    = RTC_SYNCH_PREDIV;
+  RtcHandle.Init.OutPut         = RTC_OUTPUT_DISABLE;
+  RtcHandle.Init.OutPutPolarity = RTC_OUTPUT_POLARITY_HIGH;
+  RtcHandle.Init.OutPutType     = RTC_OUTPUT_TYPE_OPENDRAIN;
+  
+  if ( HAL_RTC_Init( &RtcHandle ) != HAL_OK )
+  {
+    
+    /* Initialization Error */
+    Error_Handler();
+  }
+}
+
+/**
+* @brief  Configures the current time and date
+* @param  None
+* @retval None
+*/
+static void RTC_TimeStampConfig( void )
+{
+  
+  RTC_DateTypeDef sdatestructure;
   RTC_TimeTypeDef stimestructure;
   
-  HAL_RTC_GetTime( RtcHandle, &stimestructure, FORMAT_BIN );
-  HAL_RTC_GetDate( RtcHandle, &sdatestructureget, FORMAT_BIN );
-  subSec = (((((( int )RTC_SYNCH_PREDIV) - (( int )stimestructure.SubSeconds)) * 100) / ( RTC_SYNCH_PREDIV + 1 )) & 0xff );
+  /*##-3- Configure the Date using BCD format ################################*/
+  /* Set Date: Monday January 1st 2000 */
+  sdatestructure.Year    = 0x00;
+  sdatestructure.Month   = RTC_MONTH_JANUARY;
+  sdatestructure.Date    = 0x01;
+  sdatestructure.WeekDay = RTC_WEEKDAY_MONDAY;
   
-  if(SendOverUSB) /* Write data on the USB */
+  if ( HAL_RTC_SetDate( &RtcHandle, &sdatestructure, FORMAT_BCD ) != HAL_OK )
   {
-    //sprintf( dataOut, "\nTimeStamp: %02d:%02d:%02d.%02d", stimestructure.Hours, stimestructure.Minutes, stimestructure.Seconds, subSec );
-    CDC_Fill_Buffer(( uint8_t * )dataOut, strlen( dataOut ));
+    
+    /* Initialization Error */
+    Error_Handler();
   }
-  else if(SD_Log_Enabled) /* Write data to the file on the SDCard */
-  {
-    uint8_t size;
-    size = sprintf( dataOut, "%02d:%02d:%02d.%02d\t", stimestructure.Hours, stimestructure.Minutes, stimestructure.Seconds, subSec);    
-    res = f_write(&MyFile, dataOut, size, (void *)&byteswritten);
+  
+  /*##-4- Configure the Time using BCD format#################################*/
+  /* Set Time: 00:00:00 */
+  stimestructure.Hours          = 0x00;
+  stimestructure.Minutes        = 0x00;
+  stimestructure.Seconds        = 0x00;
+  stimestructure.TimeFormat     = RTC_HOURFORMAT12_AM;
+  stimestructure.DayLightSaving = RTC_DAYLIGHTSAVING_NONE ;
+  stimestructure.StoreOperation = RTC_STOREOPERATION_RESET;
+  
+  if ( HAL_RTC_SetTime( &RtcHandle, &stimestructure, FORMAT_BCD ) != HAL_OK )
+  {   
+    /* Initialization Error */
+    Error_Handler();
   }
 }
 
-
-
 /**
-* @brief  Handles the accelerometer axes data getting/sending
-* @param  handle the device handle
+* @brief  Configures the current time and date
+* @param  hh the hour value to be set
+* @param  mm the minute value to be set
+* @param  ss the second value to be set
 * @retval None
 */
-void Accelero_Sensor_Handler( void *handle , int *state, int *acc, double *maxvel,
-    RTC_HandleTypeDef *RtcHandle, int *initialminutes, int *initialseconds, int *initialsubsec,
-	int *ishook, void *ghandle)
+void RTC_TimeRegulate( uint8_t hh, uint8_t mm, uint8_t ss )
 {
   
-  uint8_t who_am_i;
-  float odr;
-  float fullScale;
-  uint8_t id;
-  SensorAxes_t acceleration;
-  SensorAxes_t angular_velocity;
-  uint8_t status;
-  int32_t d1, d2;
-  float thresh=100000.0f;
+  RTC_TimeTypeDef stimestructure;
   
-  BSP_ACCELERO_Get_Instance( handle, &id );
+  stimestructure.TimeFormat     = RTC_HOURFORMAT12_AM;
+  stimestructure.Hours          = hh;
+  stimestructure.Minutes        = mm;
+  stimestructure.Seconds        = ss;
+  stimestructure.SubSeconds     = 0;
+  stimestructure.DayLightSaving = RTC_DAYLIGHTSAVING_NONE;
+  stimestructure.StoreOperation = RTC_STOREOPERATION_RESET;
   
-  BSP_ACCELERO_IsInitialized( handle, &status );
-  
-  if ( status == 1 )
+  if ( HAL_RTC_SetTime( &RtcHandle, &stimestructure, FORMAT_BIN ) != HAL_OK )
   {
-    if ( BSP_ACCELERO_Get_Axes( handle, &acceleration ) == COMPONENT_ERROR )
-    {
-      acceleration.AXIS_X = 0;
-      acceleration.AXIS_Y = 0;
-      acceleration.AXIS_Z = 0;
-    }
-    
-    //velocity
-    int32_t abs_acc;
-    abs_acc=((int)acceleration.AXIS_X*(int)acceleration.AXIS_X);
-    abs_acc+=((int)acceleration.AXIS_Y*(int)acceleration.AXIS_Y);
-    abs_acc+=((int)acceleration.AXIS_Z*(int)acceleration.AXIS_Z);
-    abs_acc=sqrt((float)abs_acc);
-    sprintf(dataOut,"");
-    CDC_Fill_Buffer(( uint8_t * )dataOut, strlen( dataOut ));
-
-    *acc=abs_acc;
-
-    if(acc>maxvel)
-      maxvel=acc;
-
-    //quickness
-    uint8_t subSec = 0;
-    RTC_DateTypeDef sdatestructureget;
-    RTC_TimeTypeDef stimestructure;
-    HAL_RTC_GetTime( RtcHandle, &stimestructure, FORMAT_BIN );
-    HAL_RTC_GetDate( RtcHandle, &sdatestructureget, FORMAT_BIN );
-    subSec = (((((( int )RTC_SYNCH_PREDIV) - (( int )stimestructure.SubSeconds)) * 100) / ( RTC_SYNCH_PREDIV + 1 )) & 0xff );
-
-    //type
-    if ( BSP_GYRO_Get_Axes( ghandle, &angular_velocity ) == COMPONENT_ERROR ){
-          angular_velocity.AXIS_X = 0;
-          angular_velocity.AXIS_Y = 0;
-          angular_velocity.AXIS_Z = 0;
-    }
-
-    //sprintf(dataOut," Y Ang Vel: %d", angular_velocity.AXIS_Y);
-    //CDC_Fill_Buffer(( uint8_t * )dataOut, strlen( dataOut ));
-
-    if(angular_velocity.AXIS_Y>thresh && *state==1){
-        *ishook=0;
-    }
-
-    if(SendOverUSB) /* Write data on the USB */
-    {
-      if(*acc>3550 && *state==0){
-        *state=1;
-        //sprintf( dataOut, "\nTimeStamp: %02d:%02d:%02d.%02d", stimestructure.Hours, stimestructure.Minutes, stimestructure.Seconds, subSec );
-        *initialminutes=stimestructure.Minutes;
-        *initialseconds=stimestructure.Seconds;
-        *initialsubsec=subSec;
-        /*
-        CDC_Fill_Buffer(( uint8_t * )dataOut, strlen( dataOut ));
-        sprintf(dataOut," Punch Started! ");
-        CDC_Fill_Buffer(( uint8_t * )dataOut, strlen( dataOut ));
-        sprintf(dataOut,"");
-        CDC_Fill_Buffer(( uint8_t * )dataOut, strlen( dataOut ));*/
-      }
-      else if(*acc<3550 && *state==1){
-        *state=0;
-        //sprintf( dataOut, "initialseconds: %d, initialsubsec: %d, stimestructure.Seconds: %d, subsec: %d", *initialseconds, *initialsubsec, stimestructure.Seconds, subSec);
-        //CDC_Fill_Buffer(( uint8_t * )dataOut, strlen( dataOut ));
-        int quick=abs(subSec-*initialsubsec);
-        //sprintf( dataOut, "Quickness: %i", quick);
-        //CDC_Fill_Buffer(( uint8_t * )dataOut, strlen( dataOut ));
-        if(quick<=15)
-        	sprintf(dataOut," Jab with force of %d m/ds detected\n", *maxvel/20);
-        if(quick>15 && *ishook==0)
-            sprintf(dataOut,"Cros with force of %d m/ds detected\n", *maxvel/20);
-        if(quick>15 && *ishook==1)
-            sprintf(dataOut,"Hook with force of %d m/ds detected\n", *maxvel/20);
-        CDC_Fill_Buffer(( uint8_t * )dataOut, strlen( dataOut ));
-        sprintf(dataOut,"");
-        CDC_Fill_Buffer(( uint8_t * )dataOut, strlen( dataOut ));
-        *ishook=1;
-        *maxvel=0;
-      }
-
-
-      if ( verbose == 1 )
-      {
-        if ( BSP_ACCELERO_Get_WhoAmI( handle, &who_am_i ) == COMPONENT_ERROR )
-        {
-          sprintf( dataOut, "WHO AM I address[%d]: ERROR\n", id );
-        }
-        else
-        {
-          sprintf( dataOut, "WHO AM I address[%d]: 0x%02X\n", id, who_am_i );
-        }
-        
-        CDC_Fill_Buffer(( uint8_t * )dataOut, strlen( dataOut ));
-        
-        if ( BSP_ACCELERO_Get_ODR( handle, &odr ) == COMPONENT_ERROR )
-        {
-          sprintf( dataOut, "ODR[%d]: ERROR\n", id );
-        }
-        else
-        {
-          floatToInt( odr, &d1, &d2, 3 );
-          sprintf( dataOut, "ODR[%d]: %d.%03d Hz\n", (int)id, (int)d1, (int)d2 );
-        }
-        
-        CDC_Fill_Buffer(( uint8_t * )dataOut, strlen( dataOut ));
-        
-        if ( BSP_ACCELERO_Get_FS( handle, &fullScale ) == COMPONENT_ERROR )
-        {
-          sprintf( dataOut, "FS[%d]: ERROR\n", id );
-        }
-        else
-        {
-          floatToInt( fullScale, &d1, &d2, 3 );
-          sprintf( dataOut, "FS[%d]: %d.%03d g\n", (int)id, (int)d1, (int)d2 );
-        }
-        
-        CDC_Fill_Buffer(( uint8_t * )dataOut, strlen( dataOut ));
-      }
-    }
-    else if(SD_Log_Enabled) /* Write data to the file on the SDCard */
-    {
-      uint8_t size;
-      size = sprintf(dataOut, "%d\t%d\t%d\t", (int)acceleration.AXIS_X, (int)acceleration.AXIS_Y, (int)acceleration.AXIS_Z);
-      res = f_write(&MyFile, dataOut, size, (void *)&byteswritten);
-    }
+    /* Initialization Error */
+    Error_Handler();
   }
 }
 
 
 
 /**
-* @brief  Handles the gyroscope axes data getting/sending
-* @param  handle the device handle
+* @brief  EXTI line detection callbacks
+* @param  GPIO_Pin: Specifies the pins connected EXTI line
 * @retval None
 */
-void Gyro_Sensor_Handler( void *handle )
+void HAL_GPIO_EXTI_Callback( uint16_t GPIO_Pin )
 {
-  uint8_t who_am_i;
-  float odr;
-  float fullScale;
-  uint8_t id;
-  SensorAxes_t angular_velocity;
-  uint8_t status;
-  int32_t d1, d2;
-  float thresh=200000.0f;
-  
-  BSP_GYRO_Get_Instance( handle, &id );
-  
-  BSP_GYRO_IsInitialized( handle, &status );
-  
-  if ( status == 1 )
-  {
-    if ( BSP_GYRO_Get_Axes( handle, &angular_velocity ) == COMPONENT_ERROR )
-    {
-      angular_velocity.AXIS_X = 0;
-      angular_velocity.AXIS_Y = 0;
-      angular_velocity.AXIS_Z = 0;
-    }
-    
-    if(SendOverUSB) /* Write data on the USB */
-    {
-      //sprintf( dataOut, "\n\rGYR_X: %d, GYR_Y: %d, GYR_Z: %d", (int)angular_velocity.AXIS_X, (int)angular_velocity.AXIS_Y, (int)angular_velocity.AXIS_Z );
-/*
-    	if(angular_velocity.AXIS_X>thresh){
-    		sprintf(dataOut,"X Rotation!");
-    		CDC_Fill_Buffer(( uint8_t * )dataOut, strlen( dataOut ));
-    	}
-    	if(angular_velocity.AXIS_Y>thresh){
-    	    sprintf(dataOut,"Y Rotation!");
-    	    CDC_Fill_Buffer(( uint8_t * )dataOut, strlen( dataOut ));
-    	}
-    	if(angular_velocity.AXIS_Z>thresh){
-    	    sprintf(dataOut,"Z Rotation!");
-    	    CDC_Fill_Buffer(( uint8_t * )dataOut, strlen( dataOut ));
-    	}
-
-*/
-    	sprintf(dataOut,"");
-    	CDC_Fill_Buffer(( uint8_t * )dataOut, strlen( dataOut ));
-      
-      if ( verbose == 1 )
-      {
-        if ( BSP_GYRO_Get_WhoAmI( handle, &who_am_i ) == COMPONENT_ERROR )
-        {
-          sprintf( dataOut, "WHO AM I address[%d]: ERROR\n", id );
-        }
-        else
-        {
-          sprintf( dataOut, "WHO AM I address[%d]: 0x%02X\n", id, who_am_i );
-        }
-        
-        CDC_Fill_Buffer(( uint8_t * )dataOut, strlen( dataOut ));
-        
-        if ( BSP_GYRO_Get_ODR( handle, &odr ) == COMPONENT_ERROR )
-        {
-          sprintf( dataOut, "ODR[%d]: ERROR\n", id );
-        }
-        else
-        {
-          floatToInt( odr, &d1, &d2, 3 );
-          sprintf( dataOut, "ODR[%d]: %d.%03d Hz\n", (int)id, (int)d1, (int)d2 );
-        }
-        
-        CDC_Fill_Buffer(( uint8_t * )dataOut, strlen( dataOut ));
-        
-        if ( BSP_GYRO_Get_FS( handle, &fullScale ) == COMPONENT_ERROR )
-        {
-          sprintf( dataOut, "FS[%d]: ERROR\n", id );
-        }
-        else
-        {
-          floatToInt( fullScale, &d1, &d2, 3 );
-          sprintf( dataOut, "FS[%d]: %d.%03d dps\n", (int)id, (int)d1, (int)d2 );
-        }
-        
-        CDC_Fill_Buffer(( uint8_t * )dataOut, strlen( dataOut ));
-      }
-    }
-    else if(SD_Log_Enabled) /* Write data to the file on the SDCard */
-    {
-      uint8_t size;
-      size = sprintf(dataOut, "%d\t%d\t%d\t", (int)angular_velocity.AXIS_X, (int)angular_velocity.AXIS_Y, (int)angular_velocity.AXIS_Z);
-      res = f_write(&MyFile, dataOut, size, (void *)&byteswritten);
-    }
-  }
+  MEMSInterrupt=1;
 }
 
 
 
 /**
-* @brief  Handles the magneto axes data getting/sending
-* @param  handle the device handle
+* @brief  This function is executed in case of error occurrence
+* @param  None
 * @retval None
 */
-void Magneto_Sensor_Handler( void *handle )
+static void Error_Handler( void )
 {
-  uint8_t who_am_i;
-  float odr;
-  float fullScale;
-  uint8_t id;
-  SensorAxes_t magnetic_field;
-  uint8_t status;
-  int32_t d1, d2;
   
-  BSP_MAGNETO_Get_Instance( handle, &id );
-  
-  BSP_MAGNETO_IsInitialized( handle, &status );
-  
-  if ( status == 1 )
-  {
-    if ( BSP_MAGNETO_Get_Axes( handle, &magnetic_field ) == COMPONENT_ERROR )
-    {
-      magnetic_field.AXIS_X = 0;
-      magnetic_field.AXIS_Y = 0;
-      magnetic_field.AXIS_Z = 0;
-    }
-    
-    if(SendOverUSB) /* Write data on the USB */
-    {
-      //sprintf( dataOut, "\n\rMAG_X: %d, MAG_Y: %d, MAG_Z: %d", (int)magnetic_field.AXIS_X, (int)magnetic_field.AXIS_Y, (int)magnetic_field.AXIS_Z );
-      CDC_Fill_Buffer(( uint8_t * )dataOut, strlen( dataOut ));
-      
-      if ( verbose == 1 )
-      {
-        if ( BSP_MAGNETO_Get_WhoAmI( handle, &who_am_i ) == COMPONENT_ERROR )
-        {
-          sprintf( dataOut, "WHO AM I address[%d]: ERROR\n", id );
-        }
-        else
-        {
-          sprintf( dataOut, "WHO AM I address[%d]: 0x%02X\n", id, who_am_i );
-        }
-        
-        CDC_Fill_Buffer(( uint8_t * )dataOut, strlen( dataOut ));      
-        
-        if ( BSP_MAGNETO_Get_ODR( handle, &odr ) == COMPONENT_ERROR )
-        {
-          sprintf( dataOut, "ODR[%d]: ERROR\n", id );
-        }
-        else
-        {
-          floatToInt( odr, &d1, &d2, 3 );
-          sprintf( dataOut, "ODR[%d]: %d.%03d Hz\n", (int)id, (int)d1, (int)d2 );
-        }
-        
-        CDC_Fill_Buffer(( uint8_t * )dataOut, strlen( dataOut ));
-        
-        if ( BSP_MAGNETO_Get_FS( handle, &fullScale ) == COMPONENT_ERROR )
-        {
-          sprintf( dataOut, "FS[%d]: ERROR\n", id );
-        }
-        else
-        {
-          floatToInt( fullScale, &d1, &d2, 3 );
-          sprintf( dataOut, "FS[%d]: %d.%03d Gauss\n", (int)id, (int)d1, (int)d2 );
-        }
-        
-        CDC_Fill_Buffer(( uint8_t * )dataOut, strlen( dataOut ));
-      }
-    }
-    else if(SD_Log_Enabled) /* Write data to the file on the SDCard */
-    {
-      uint8_t size;
-      size = sprintf(dataOut, "%d\t%d\t%d\t", (int)magnetic_field.AXIS_X, (int)magnetic_field.AXIS_Y, (int)magnetic_field.AXIS_Z);
-      res = f_write(&MyFile, dataOut, size, (void *)&byteswritten);
-    }
-  }
+  while (1)
+  {}
 }
 
 
+#ifdef  USE_FULL_ASSERT
+
 /**
-* @brief  Handles the humidity data getting/sending
-* @param  handle the device handle
+* @brief  Reports the name of the source file and the source line number
+*   where the assert_param error has occurred
+* @param  file: pointer to the source file name
+* @param  line: assert_param error line source number
 * @retval None
 */
-void Humidity_Sensor_Handler( void *handle )
-{
-  int32_t d1, d2;
-  uint8_t who_am_i;
-  float odr;
-  uint8_t id;
-  float humidity;
-  uint8_t status;
-  
-  BSP_HUMIDITY_Get_Instance( handle, &id );
-  
-  BSP_HUMIDITY_IsInitialized( handle, &status );
-  
-  if ( status == 1 )
-  {
-    if ( BSP_HUMIDITY_Get_Hum( handle, &humidity ) == COMPONENT_ERROR )
-    {
-      humidity = 0.0f;
-    }
-    
-    floatToInt( humidity, &d1, &d2, 2 );
-    
-    if(SendOverUSB) /* Write data on the USB */
-    {
-      //sprintf( dataOut, "\n\rHUM: %d.%02d", (int)d1, (int)d2 );
-      CDC_Fill_Buffer(( uint8_t * )dataOut, strlen( dataOut ));
-      
-      if ( verbose == 1 )
-      {
-        if ( BSP_HUMIDITY_Get_WhoAmI( handle, &who_am_i ) == COMPONENT_ERROR )
-        {
-          sprintf( dataOut, "WHO AM I address[%d]: ERROR\n", id );
-        }
-        else
-        {
-          sprintf( dataOut, "WHO AM I address[%d]: 0x%02X\n", id, who_am_i );
-        }
-        
-        CDC_Fill_Buffer(( uint8_t * )dataOut, strlen( dataOut ));
-        
-        if ( BSP_HUMIDITY_Get_ODR( handle, &odr ) == COMPONENT_ERROR )
-        {
-          sprintf( dataOut, "ODR[%d]: ERROR\n", id );
-        }
-        else
-        {
-          floatToInt( odr, &d1, &d2, 3 );
-          sprintf( dataOut, "ODR[%d]: %d.%03d Hz\n", (int)id, (int)d1, (int)d2 );
-        }
-        
-        CDC_Fill_Buffer(( uint8_t * )dataOut, strlen( dataOut ));
-      }
-    }
-    else if(SD_Log_Enabled) /* Write data to the file on the SDCard */
-    {
-      uint8_t size;
-      size = sprintf( dataOut, "%5.2f\t", humidity);
-      res = f_write(&MyFile, dataOut, size, (void *)&byteswritten);
-    }
-  }
-}
-
-
-/**
-* @brief  Handles the temperature data getting/sending
-* @param  handle the device handle
-* @retval None
-*/
-void Temperature_Sensor_Handler( void *handle )
+void assert_failed( uint8_t *file, uint32_t line )
 {
   
-  int32_t d1, d2;
-  uint8_t who_am_i;
-  float odr;
-  uint8_t id;
-  float temperature;
-  uint8_t status;
+  /* User can add his own implementation to report the file name and line number,
+  ex: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
   
-  BSP_TEMPERATURE_Get_Instance( handle, &id );
-  
-  BSP_TEMPERATURE_IsInitialized( handle, &status );
-  
-  if ( status == 1 )
-  {
-    if ( BSP_TEMPERATURE_Get_Temp( handle, &temperature ) == COMPONENT_ERROR )
-    {
-      temperature = 0.0f;
-    }
-    
-    floatToInt( temperature, &d1, &d2, 2 );
-    
-    if(SendOverUSB) /* Write data on the USB */
-    {
-      //sprintf( dataOut, "\n\rTEMP: %d.%02d", (int)d1, (int)d2 );
-      CDC_Fill_Buffer(( uint8_t * )dataOut, strlen( dataOut ));
-      
-      if ( verbose == 1 )
-      {
-        if ( BSP_TEMPERATURE_Get_WhoAmI( handle, &who_am_i ) == COMPONENT_ERROR )
-        {
-          sprintf( dataOut, "WHO AM I address[%d]: ERROR\n", id );
-        }
-        else
-        {
-          sprintf( dataOut, "WHO AM I address[%d]: 0x%02X\n", id, who_am_i );
-        }
-        
-        CDC_Fill_Buffer(( uint8_t * )dataOut, strlen( dataOut ));
-        
-        if ( BSP_TEMPERATURE_Get_ODR( handle, &odr ) == COMPONENT_ERROR )
-        {
-          sprintf( dataOut, "ODR[%d]: ERROR\n", id );
-        }
-        else
-        {
-          floatToInt( odr, &d1, &d2, 3 );
-          sprintf( dataOut, "ODR[%d]: %d.%03d Hz\n", (int)id, (int)d1, (int)d2 );
-        }
-        
-        CDC_Fill_Buffer(( uint8_t * )dataOut, strlen( dataOut ));
-      }
-    }
-    else if(SD_Log_Enabled) /* Write data to the file on the SDCard */
-    {
-      uint8_t size;
-      size = sprintf( dataOut, "%3.1f\t", temperature);
-      res = f_write(&MyFile, dataOut, size, (void *)&byteswritten);
-    }
-  }
+  while (1)
+  {}
 }
 
-
-
-/**
-* @brief  Handles the pressure sensor data getting/sending
-* @param  handle the device handle
-* @retval None
-*/
-void Pressure_Sensor_Handler( void *handle )
-{
-  int32_t d1, d2;
-  uint8_t who_am_i;
-  float odr;
-  uint8_t id;
-  float pressure;
-  uint8_t status;
-  
-  BSP_PRESSURE_Get_Instance( handle, &id );
-  
-  BSP_PRESSURE_IsInitialized( handle, &status );
-  
-  if( status == 1 )
-  {
-    if ( BSP_PRESSURE_Get_Press( handle, &pressure ) == COMPONENT_ERROR )
-    {
-      pressure = 0.0f;
-    }
-    
-    floatToInt( pressure, &d1, &d2, 2 );
-    
-    if(SendOverUSB)
-    {
-      //sprintf(dataOut, "\n\rPRESS: %d.%02d", (int)d1, (int)d2);
-      CDC_Fill_Buffer(( uint8_t * )dataOut, strlen( dataOut ));
-      
-      if ( verbose == 1 )
-      {
-        if ( BSP_PRESSURE_Get_WhoAmI( handle, &who_am_i ) == COMPONENT_ERROR )
-        {
-          sprintf( dataOut, "WHO AM I address[%d]: ERROR\n", id );
-        }
-        else
-        {
-          sprintf( dataOut, "WHO AM I address[%d]: 0x%02X\n", id, who_am_i );
-        }
-        CDC_Fill_Buffer(( uint8_t * )dataOut, strlen( dataOut ));      
-        
-        if ( BSP_PRESSURE_Get_ODR( handle, &odr ) == COMPONENT_ERROR )
-        {
-          sprintf( dataOut, "ODR[%d]: ERROR\n", id );
-        }
-        else
-        {
-          floatToInt( odr, &d1, &d2, 3 );
-          sprintf( dataOut, "ODR[%d]: %d.%03d Hz\n", (int)id, (int)d1, (int)d2 );
-        }
-        CDC_Fill_Buffer(( uint8_t * )dataOut, strlen( dataOut ));      
-      }
-    }
-    else if(SD_Log_Enabled) /* Write data to the file on the SDCard */
-    {
-      uint8_t size;
-      size = sprintf( dataOut, "%5.2f\t", pressure);
-      res = f_write(&MyFile, dataOut, size, (void *)&byteswritten);
-    }
-  }
-}
-
-void Gas_Gauge_Handler( void *handle )
-{
-  uint32_t voltage, soc;
-  uint8_t vmode, status;
-  
-  BSP_GG_IsInitialized(handle, &status );
-  
-  if ( status == 1 )
-  {
-    /* Update Gas Gauge Status */
-    if (BSP_GG_Task(handle, &vmode)== COMPONENT_ERROR )
-    {
-      voltage= 0.0f;
-      soc= 0.0f;
-    }
-
-    /* Read the Gas Gauge Status */
-    if ( BSP_GG_GetVoltage(handle, &voltage) == COMPONENT_ERROR )
-    {
-      voltage = 0.0f;
-    }
-    
-    if ( BSP_GG_GetSOC(handle, &soc) == COMPONENT_ERROR )
-    {
-      soc= 0.0f;
-    }
-    
-    if(SendOverUSB) /* Write data on the USB */
-    {
-      //sprintf( dataOut, "\n\rV: %dmV Chrg: %d%%", (uint32_t)voltage, (uint32_t)soc);
-      CDC_Fill_Buffer(( uint8_t * )dataOut, strlen( dataOut ));
-    }
-    else if(SD_Log_Enabled) /* Write data to the file on the SDCard */
-    {
-      uint8_t size;
-      size = sprintf( dataOut, "%d\t%d\t", (uint32_t)voltage, (uint32_t)soc);
-      res = f_write(&MyFile, dataOut, size, (void *)&byteswritten);
-    }
-  }
-}
-
-/**
-* @brief  Splits a float into two integer values.
-* @param  in the float value as input
-* @param  out_int the pointer to the integer part as output
-* @param  out_dec the pointer to the decimal part as output
-* @param  dec_prec the decimal precision to be used
-* @retval None
-*/
-void floatToInt( float in, int32_t *out_int, int32_t *out_dec, int32_t dec_prec )
-{
-  *out_int = (int32_t)in;
-  if(in >= 0.0f)
-  {
-    in = in - (float)(*out_int);
-  }
-  else
-  {
-    in = (float)(*out_int) - in;
-  }
-  *out_dec = (int32_t)trunc(in * pow(10, dec_prec));
-}
-
-/**
-  * @}
-  */
-
-/**
-  * @}
-  */
-
-/**
-  * @}
-  */
-
-/**
-  * @}
-  */
+#endif
 
 /************************ (C) COPYRIGHT STMicroelectronics *****END OF FILE****/
