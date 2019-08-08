@@ -44,7 +44,7 @@ void DATALOG_SD_Log_Disable(void);
 void DATALOG_SD_NewLine(void);
 void RTC_Handler( RTC_HandleTypeDef *RtcHandle );
 void Accelero_Sensor_Handler( void *handle, int* state, int *acc, double *maxvel,
-		RTC_HandleTypeDef *RtcHandle, int *initialminutes, int *initialseconds, int *initialsubsec);
+		RTC_HandleTypeDef *RtcHandle, int *initialminutes, int *initialseconds, int *initialsubsec, int *ishook, void *ghandle);
 void Gyro_Sensor_Handler( void *handle );
 void Magneto_Sensor_Handler( void *handle );
 void Temperature_Sensor_Handler( void *handle );
