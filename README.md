@@ -1,5 +1,5 @@
 # BoxingWearable
-Prototype boxing glove sensor that helps coach boxing. Modified from the SensorTile default project DataLog. Made for SensorTile, flashed with Nucleo-64.
+Prototype boxing glove sensor. Modified from the SensorTile default project DataLog. Made for SensorTile, flashed with Nucleo-64.
 
 Instructions:
 1. Extract zip
