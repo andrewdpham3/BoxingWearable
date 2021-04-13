@@ -1,5 +1,8 @@
 # BoxingWearable
-Prototype boxing glove sensor. Modified from the SensorTile default project DataLog. Made for SensorTile, flashed with Nucleo-64.
+
+Prototype boxing glove sensor that detects punch force and type when attached to a boxing glove. Modified from the SensorTile default project DataLog. Made for SensorTile, flashed with Nucleo-64.
+
+[![forthebadge](https://forthebadge.com/images/badges/60-percent-of-the-time-works-every-time.svg)](https://forthebadge.com)
 
 Instructions:
 1. Extract zip
